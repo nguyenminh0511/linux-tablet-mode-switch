@@ -1,8 +1,8 @@
 # tabletmode
 
-A virtual **Tablet Mode switch** for Linux convertibles whose hardware switch is missing or not exposed. It was built for the **GPD Pocket 4** but should work on any machine with a similar problem.
+A virtual **Tablet Mode switch** for Linux convertibles whose hardware switch is missing or not exposed. It was built and tested on the **GPD Pocket 4**, and is designed to work on other Linux touchscreen devices too (see [Compatibility](#compatibility)).
 
-Flip the switch from GNOME Quick Settings or from the command line. GNOME then behaves as it does on a real tablet: the screen auto-rotates with the accelerometer and the on-screen keyboard is enabled.
+Flip the switch from GNOME Quick Settings or from the command line. GNOME then behaves as it does on a real tablet: the screen auto-rotates with the accelerometer (if the device has one) and the on-screen keyboard is enabled.
 
 ![GNOME](https://img.shields.io/badge/GNOME-46%20%7C%2047%20%7C%2048-4a86cf) ![Go](https://img.shields.io/badge/Go-stdlib%20only-00add8) ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -31,19 +31,52 @@ Flip the switch from GNOME Quick Settings or from the command line. GNOME then b
 | iio-sensor-proxy | for auto-rotation |
 | Go | 1.27 or newer, **only to build from source** |
 
+## Compatibility
+
+tabletmode does not check the device model. It runs on **any Linux machine** with GNOME 46–48 and systemd. How useful it is depends on the hardware.
+
+| Device | What works |
+|--------|------------|
+| Touchscreen **and** accelerometer (2-in-1, tablet, GPD Pocket 4) | Everything: auto-rotation, Rotation Lock, on-screen keyboard |
+| Touchscreen, **no** accelerometer (laptop with a touch panel, external touch monitor) | Toggle and on-screen keyboard only. The screen does not rotate, so Rotation Lock does nothing. |
+| No touchscreen | Installs and runs, but there is little reason to use it |
+
+**Does auto-rotation work on my device?** Check these two things:
+
+1. **The device has an accelerometer.** Run `monitor-sensor` (from `iio-sensor-proxy`) and tilt the device. You should see `Accelerometer orientation changed`.
+2. **The rotation direction is correct.** Rotation is done by mutter. It depends on two settings for your device:
+   - the accelerometer mount matrix (udev hwdb);
+   - the panel orientation that the kernel reports (`panel_orientation`).
+
+   If GNOME's own Auto Rotate already rotates the screen the right way on your device, tabletmode will too. If the screen rotates the wrong way, fix the sensor setup first. tabletmode does not remap orientations.
+
+**Not supported:**
+
+- Windows. Windows has its own tablet mode.
+- Desktops other than GNOME, such as KDE Plasma or XFCE. The virtual switch may still be detected there, but the Quick Settings extension is GNOME-only and this setup is untested.
+- Systems without systemd.
+
+**Tested devices:**
+
+| Device | Distro / GNOME | Status |
+|--------|----------------|--------|
+| GPD Pocket 4 | GNOME 46, Wayland | ✅ Fully working |
+
+Tested on another device? Please open an issue or a pull request to add it to this table.
+
 ## Installation
 
 ### From source
 
 ```bash
-git clone https://github.com/nguyenminh0511/tablet-mode.git
-cd tablet-mode
+git clone https://github.com/nguyenminh0511/tablet-mode-switch.git
+cd tablet-mode-switch
 ./install.sh          # builds the binary, then asks for sudo to install
 ```
 
 ### From a release tarball
 
-Download `tabletmode-<version>.tar.gz` from the [Releases page](https://github.com/nguyenminh0511/tablet-mode/releases). It contains a prebuilt binary, so you do not need Go:
+Download `tabletmode-<version>.tar.gz` from the [Releases page](https://github.com/nguyenminh0511/tablet-mode-switch/releases). It contains a prebuilt binary, so you do not need Go:
 
 ```bash
 tar xzf tabletmode-<version>.tar.gz
