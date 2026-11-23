@@ -11,7 +11,9 @@ RuntimeDirectoryMode=0755
 # Hạn chế quyền: chỉ cần ghi /dev/uinput và tạo socket trong /run/tabletmode
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
+Environment=TABLETMODE_LOG_DIR=@LOG_DIR@
+ReadWritePaths=@LOG_DIR@
 PrivateTmp=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes

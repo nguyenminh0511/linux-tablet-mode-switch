@@ -7,6 +7,30 @@ import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quick
 
 const BIN = '/usr/local/bin/tabletmode';
 
+// install.sh thay @LOG_DIR@ bằng thư mục logs của dự án. Nếu chưa thay thì chỉ
+// ghi ra journal (journalctl -b /usr/bin/gnome-shell | grep tabletmode).
+const LOG_DIR = '@LOG_DIR@';
+const MAX_LOG_SIZE = 5 * 1024 * 1024;
+
+function log(msg) {
+    console.log(`tabletmode: ${msg}`);
+    if (LOG_DIR.startsWith('@'))
+        return;
+    try {
+        const dir = Gio.File.new_for_path(LOG_DIR);
+        const file = dir.get_child('extension.log');
+        if (file.query_exists(null) &&
+            file.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size() > MAX_LOG_SIZE)
+            file.move(dir.get_child('extension.log.1'), Gio.FileCopyFlags.OVERWRITE, null, null);
+        const out = file.append_to(Gio.FileCreateFlags.NONE, null);
+        const ts = GLib.DateTime.new_now_local().format('%Y-%m-%d %H:%M:%S');
+        out.write_all(`${ts} [extension] ${msg}\n`, null);
+        out.close(null);
+    } catch (e) {
+        console.error(`tabletmode: không ghi được log: ${e}`);
+    }
+}
+
 // Cảm biến của GPD Pocket 4 báo "right-up" khi máy đặt thẳng (hướng ngang
 // bình thường), nên phải bù lệch. Giá trị là transform của Mutter
 // (0 = bình thường, 1 = 90, 2 = 180, 3 = 270).
@@ -44,6 +68,7 @@ class RotationController {
     }
 
     setLocked(locked) {
+        log(`khóa xoay: ${locked ? 'BẬT' : 'tắt'}`);
         this.locked = locked;
         if (!locked)
             this._update();
@@ -52,6 +77,7 @@ class RotationController {
     start() {
         if (this._active)
             return;
+        log('RotationController.start');
         this._active = true;
         this._current = null;
         this._savedLock = this._settings.get_boolean('orientation-lock');
@@ -65,11 +91,15 @@ class RotationController {
                         return;
                     }
                     this._sensor = proxy;
+                    log(`đã kết nối iio-sensor-proxy, hướng hiện tại: ${proxy.get_cached_property('AccelerometerOrientation')?.unpack()}`);
                     this._sensorId = proxy.connect('g-properties-changed', () => this._update());
                     proxy.call('ClaimAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null,
-                        () => this._update());
+                        () => {
+                            log('đã claim accelerometer');
+                            this._update();
+                        });
                 } catch (e) {
-                    console.error(`tabletmode: không mở được iio-sensor-proxy: ${e}`);
+                    log(`LỖI: không mở được iio-sensor-proxy: ${e}`);
                 }
             });
     }
@@ -77,6 +107,7 @@ class RotationController {
     stop() {
         if (!this._active)
             return;
+        log('RotationController.stop');
         this._active = false;
         this._clearTimer();
         this._queued = null;
@@ -109,6 +140,7 @@ class RotationController {
                 return GLib.SOURCE_REMOVE;
             const v = this._sensor.get_cached_property('AccelerometerOrientation');
             const t = ORIENTATION_TO_TRANSFORM[v?.unpack()];
+            log(`cảm biến ổn định: ${v?.unpack()} -> transform ${t} (đang là ${this._current})`);
             if (t !== undefined)
                 this._apply(t);
             return GLib.SOURCE_REMOVE;
@@ -117,6 +149,7 @@ class RotationController {
 
     _apply(transform) {
         if (this._busy) {
+            log(`đang bận, xếp hàng transform ${transform}`);
             this._queued = transform;
             return;
         }
@@ -152,13 +185,14 @@ class RotationController {
                             try {
                                 c2.call_finish(r2);
                                 this._current = transform;
+                                log(`đã xoay màn hình: transform ${transform}`);
                             } catch (e) {
-                                console.error(`tabletmode: không xoay được màn hình: ${e}`);
+                                log(`LỖI: không xoay được màn hình: ${e}`);
                             }
                             done();
                         });
                 } catch (e) {
-                    console.error(`tabletmode: đọc cấu hình màn hình lỗi: ${e}`);
+                    log(`LỖI: đọc cấu hình màn hình lỗi: ${e}`);
                     done();
                 }
             });
@@ -166,6 +200,8 @@ class RotationController {
 }
 
 function run(cmd, callback) {
+    if (cmd !== 'status')
+        log(`chạy: tabletmode ${cmd}`);
     try {
         const proc = Gio.Subprocess.new(
             [BIN, cmd],
@@ -173,14 +209,17 @@ function run(cmd, callback) {
         proc.communicate_utf8_async(null, null, (p, res) => {
             try {
                 const [, stdout] = p.communicate_utf8_finish(res);
-                callback(p.get_successful() ? stdout.trim() : null);
+                const ok = p.get_successful();
+                if (cmd !== 'status' || !ok)
+                    log(`tabletmode ${cmd} -> ${ok ? stdout.trim() : 'THẤT BẠI'}`);
+                callback(ok ? stdout.trim() : null);
             } catch (e) {
-                console.error(`tabletmode: ${e}`);
+                log(`LỖI: ${e}`);
                 callback(null);
             }
         });
     } catch (e) {
-        console.error(`tabletmode: ${e}`);
+        log(`LỖI: ${e}`);
         callback(null);
     }
 }
@@ -238,14 +277,19 @@ class TabletIndicator extends SystemIndicator {
         // Nút Auto Rotate gốc của GNOME không còn đúng (tool tự quản lý khóa
         // xoay), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố hiện lại.
         this._stock = this._findStockRotation(lock);
+        log(`nút Auto Rotate gốc: ${this._stock ? `tìm thấy (${this._stock.constructor.name}, title=${this._stock.title}, icon=${this._stock.iconName})` : 'KHÔNG tìm thấy'}`);
         if (this._stock) {
             this._stock.hide();
+            log('đã ẩn nút Auto Rotate gốc');
             this._stockId = this._stock.connect('notify::visible', () => {
-                if (this._stock.visible)
+                if (this._stock.visible) {
+                    log('GNOME hiện lại nút Auto Rotate gốc, ẩn lại');
                     this._stock.hide();
+                }
             });
         }
         toggle.connect('notify::checked', () => {
+            log(`tablet mode đổi sang: ${toggle.checked ? 'on' : 'off'}`);
             if (toggle.checked) {
                 this._rotation.start();
             } else {
@@ -266,8 +310,10 @@ class TabletIndicator extends SystemIndicator {
         const qs = Main.panel.statusArea.quickSettings;
         const named = qs._autoRotate ?? qs._rotation;
         const item = named?.quickSettingsItems?.[0];
+        log(`tìm nút gốc: _autoRotate=${!!qs._autoRotate} _rotation=${!!qs._rotation}`);
         if (item)
             return item;
+        log(`quét lưới: ${qs.menu._grid.get_children().map(c => `${c.constructor.name}[${c.title ?? ''}|${c.iconName ?? ''}]`).join(', ')}`);
         // Dự phòng: tìm trong lưới quick settings theo icon/tiêu đề.
         const icons = ['rotation-allowed-symbolic', 'rotation-locked-symbolic'];
         return qs.menu._grid.get_children().find(c =>
@@ -296,12 +342,14 @@ class TabletIndicator extends SystemIndicator {
 
 export default class TabletModeExtension extends Extension {
     enable() {
+        log('extension enable');
         this._indicator = new TabletIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
         this._indicator.refresh();
     }
 
     disable() {
+        log('extension disable');
         this._indicator?.destroy();
         this._indicator = null;
     }

@@ -238,31 +238,31 @@ func handle(c net.Conn, d *device) {
 	// Lớp 2: ghi nhật ký (journalctl -u tabletmode) ai gửi lệnh gì.
 	uid, pid, err := peerCred(c)
 	if err != nil {
-		fmt.Printf("tabletmode: từ chối, không đọc được SO_PEERCRED: %v\n", err)
+		logf("từ chối, không đọc được SO_PEERCRED: %v", err)
 		fmt.Fprintln(c, "error: không xác định được người gửi")
 		return
 	}
 	switch cmd {
 	case "on", "off", "toggle", "status":
 	default:
-		fmt.Printf("tabletmode: uid=%d pid=%d lệnh không hợp lệ (%d byte)\n", uid, pid, len(cmd))
+		logf("uid=%d pid=%d lệnh không hợp lệ (%d byte)", uid, pid, len(cmd))
 		fmt.Fprintln(c, "error: lệnh không hợp lệ")
 		return
 	}
 	if !hasActiveLocalSession(uid) {
-		fmt.Printf("tabletmode: TỪ CHỐI uid=%d pid=%d lệnh=%s (không có phiên cục bộ đang hoạt động)\n", uid, pid, cmd)
+		logf("TỪ CHỐI uid=%d pid=%d lệnh=%s (không có phiên cục bộ đang hoạt động)", uid, pid, cmd)
 		fmt.Fprintln(c, "error: không có quyền (cần phiên đăng nhập đang hoạt động trên máy)")
 		return
 	}
 
 	state, err := d.apply(cmd)
 	if err != nil {
-		fmt.Printf("tabletmode: uid=%d pid=%d lệnh=%s -> bị chặn: %v\n", uid, pid, cmd, err)
+		logf("uid=%d pid=%d lệnh=%s -> bị chặn: %v", uid, pid, cmd, err)
 		fmt.Fprintf(c, "error: %v\n", err)
 		return
 	}
 	if cmd != "status" {
-		fmt.Printf("tabletmode: uid=%d pid=%d lệnh=%s -> %s\n", uid, pid, cmd, onOff(state))
+		logf("uid=%d pid=%d lệnh=%s -> %s", uid, pid, cmd, onOff(state))
 	}
 	fmt.Fprintln(c, onOff(state))
 }
@@ -271,10 +271,14 @@ func daemon() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("daemon cần chạy bằng root (dùng systemd)")
 	}
+	initLog()
+	logf("khởi động daemon (pid=%d)", os.Getpid())
 	d, err := newDevice()
 	if err != nil {
+		logf("lỗi tạo thiết bị uinput: %v", err)
 		return err
 	}
+	logf("đã tạo thiết bị uinput %q", devName)
 	defer d.close()
 
 	if err := os.MkdirAll("/run/tabletmode", 0o755); err != nil {
@@ -294,11 +298,12 @@ func daemon() error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sig
+		s := <-sig
+		logf("nhận tín hiệu %v, đang dừng", s)
 		l.Close()
 	}()
 
-	fmt.Println("tabletmode: sẵn sàng, trạng thái: off")
+	logf("sẵn sàng, trạng thái: off, socket %s", sockPath)
 	sem := make(chan struct{}, maxConns)
 	for {
 		c, err := l.Accept()
@@ -312,6 +317,7 @@ func daemon() error {
 				handle(c, d)
 			}()
 		default:
+			logf("quá nhiều kết nối (%d), bỏ qua một kết nối", maxConns)
 			c.Close() // quá nhiều kết nối: bỏ qua
 		}
 	}
