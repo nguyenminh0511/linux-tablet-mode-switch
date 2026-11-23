@@ -8,7 +8,7 @@ Restart=on-failure
 RuntimeDirectory=tabletmode
 RuntimeDirectoryMode=0755
 
-# Hạn chế quyền: chỉ cần ghi /dev/uinput và tạo socket trong /run/tabletmode
+# Hardening: only needs to write /dev/uinput and create a socket in /run/tabletmode
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

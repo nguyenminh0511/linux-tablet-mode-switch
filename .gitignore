@@ -1,2 +1,17 @@
-tabletmode
-logs/
+# Build output
+/tabletmode
+/dist/
+
+# Runtime logs written by the daemon and the extension
+/logs/
+*.log
+*.log.1
+
+# Personal working notes
+STATUS.md
+
+# Editor / tool state
+.vscode/
+.idea/
+.claude/
+*.swp

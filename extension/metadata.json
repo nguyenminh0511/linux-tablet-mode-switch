@@ -1,6 +1,6 @@
 {
   "uuid": "tabletmode@local",
   "name": "Tablet Mode Toggle",
-  "description": "Nút bật/tắt tablet mode ảo trong Quick Settings (gọi /usr/local/bin/tabletmode).",
+  "description": "Quick Settings toggle for a virtual tablet mode switch (uses /usr/local/bin/tabletmode), with a rotation lock.",
   "shell-version": ["46", "47", "48"]
 }

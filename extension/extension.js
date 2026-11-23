@@ -7,8 +7,8 @@ import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quick
 
 const BIN = '/usr/local/bin/tabletmode';
 
-// install.sh thay @LOG_DIR@ bằng thư mục logs của dự án. Nếu chưa thay thì chỉ
-// ghi ra journal (journalctl -b /usr/bin/gnome-shell | grep tabletmode).
+// install.sh replaces @LOG_DIR@ with the project's logs directory. If it was not
+// replaced, messages only go to the journal (journalctl -b /usr/bin/gnome-shell | grep tabletmode).
 const LOG_DIR = '@LOG_DIR@';
 const MAX_LOG_SIZE = 5 * 1024 * 1024;
 
@@ -27,27 +27,29 @@ function log(msg) {
         out.write_all(`${ts} [extension] ${msg}\n`, null);
         out.close(null);
     } catch (e) {
-        console.error(`tabletmode: không ghi được log: ${e}`);
+        console.error(`tabletmode: cannot write log: ${e}`);
     }
 }
 
 const LOCK_KEY = 'orientation-lock';
-// Thời gian chờ để mutter nhận thay đổi orientation-lock và đọc lại cảm biến
-// trước khi công tắc tablet mode được gửi đi.
+// Time to let mutter pick up the orientation-lock change and re-read the sensor
+// before the tablet mode switch is sent.
 const UNLOCK_SYNC_MS = 300;
 
 const DISPLAY_NAME = 'org.gnome.Mutter.DisplayConfig';
 const DISPLAY_PATH = '/org/gnome/Mutter/DisplayConfig';
 
-// Việc xoay màn hình trong tablet mode do chính mutter làm. Kernel đã khai báo
-// panel_orientation=right_side_up cho eDP-1, nên mutter quy đổi đúng hướng cảm
-// biến: right-up -> ngang (transform 0), normal -> 1, left-up -> 2, bottom-up -> 3.
+// Screen rotation in tablet mode is done by mutter itself. The kernel declares
+// panel_orientation=right_side_up for eDP-1, so mutter maps the sensor
+// orientation correctly: right-up -> landscape (transform 0), normal -> 1,
+// left-up -> 2, bottom-up -> 3.
 //
-// Mutter chỉ cập nhật hướng cảm biến khi orientation-lock=false. Nếu khóa đang
-// bật lúc vào tablet mode, mutter áp hướng nó nhớ từ trước; khóa từ lúc đăng
-// nhập thì hướng đó là UNDEFINED, coi như "normal", nên màn hình xoay dọc sai.
-// Vì vậy extension giữ orientation-lock=false, chỉ bật khi người dùng bấm
-// Rotation Lock (mutter giữ nguyên hướng hiện tại).
+// Mutter only tracks the sensor orientation while orientation-lock=false. If
+// the lock is on when tablet mode is entered, mutter applies the orientation it
+// remembered earlier; if the lock has been on since login, that orientation is
+// UNDEFINED, treated as "normal", and the screen wrongly rotates to portrait.
+// So the extension keeps orientation-lock=false and only sets it when the user
+// presses Rotation Lock (mutter then keeps the current orientation).
 class RotationController {
     constructor() {
         this._settings = new Gio.Settings({
@@ -63,7 +65,7 @@ class RotationController {
         log(`orientation-lock=${locked}`);
     }
 
-    // Gọi trước khi bật tablet mode: mở khóa và chờ mutter đọc lại cảm biến.
+    // Called before enabling tablet mode: unlock and wait for mutter to re-read the sensor.
     prepare(callback) {
         this._clearTimer();
         if (!this._settings.get_boolean(LOCK_KEY)) {
@@ -78,16 +80,16 @@ class RotationController {
         });
     }
 
-    // Gọi khi tắt tablet mode: mở khóa và đưa màn hình về ngang nếu đang xoay
-    // (mutter không tự xoay lại khi ra khỏi tablet mode).
+    // Called when tablet mode is turned off: unlock and restore landscape if the
+    // screen is rotated (mutter does not rotate back when leaving tablet mode).
     stop() {
         this._clearTimer();
         this.setLocked(false);
         this._resetTransform();
     }
 
-    // Khi extension bị tắt (kể cả lúc đăng xuất): trả khóa về mặc định của
-    // GNOME để lần đăng nhập sau mutter vẫn theo dõi cảm biến.
+    // Called when the extension is disabled (including at logout): restore the
+    // GNOME default so mutter keeps tracking the sensor on the next login.
     destroy() {
         this._clearTimer();
         this.setLocked(false);
@@ -123,13 +125,13 @@ class RotationController {
                         (c2, r2) => {
                             try {
                                 c2.call_finish(r2);
-                                log('đã đưa màn hình về ngang (transform 0)');
+                                log('restored landscape (transform 0)');
                             } catch (e) {
-                                log(`LỖI: không xoay được màn hình: ${e}`);
+                                log(`ERROR: cannot rotate the screen: ${e}`);
                             }
                         });
                 } catch (e) {
-                    log(`LỖI: đọc cấu hình màn hình lỗi: ${e}`);
+                    log(`ERROR: cannot read the display configuration: ${e}`);
                 }
             });
     }
@@ -137,7 +139,7 @@ class RotationController {
 
 function run(cmd, callback) {
     if (cmd !== 'status')
-        log(`chạy: tabletmode ${cmd}`);
+        log(`running: tabletmode ${cmd}`);
     try {
         const proc = Gio.Subprocess.new(
             [BIN, cmd],
@@ -147,15 +149,15 @@ function run(cmd, callback) {
                 const [, stdout] = p.communicate_utf8_finish(res);
                 const ok = p.get_successful();
                 if (cmd !== 'status' || !ok)
-                    log(`tabletmode ${cmd} -> ${ok ? stdout.trim() : 'THẤT BẠI'}`);
+                    log(`tabletmode ${cmd} -> ${ok ? stdout.trim() : 'FAILED'}`);
                 callback(ok ? stdout.trim() : null);
             } catch (e) {
-                log(`LỖI: ${e}`);
+                log(`ERROR: ${e}`);
                 callback(null);
             }
         });
     } catch (e) {
-        log(`LỖI: ${e}`);
+        log(`ERROR: ${e}`);
         callback(null);
     }
 }
@@ -186,7 +188,7 @@ class TabletToggle extends QuickToggle {
         if (out === 'on' || out === 'off')
             this.checked = out === 'on';
         else if (!quiet)
-            Main.notify('Tablet Mode', 'Không điều khiển được dịch vụ tabletmode.');
+            Main.notify('Tablet Mode', 'Cannot control the tabletmode service.');
     }
 });
 
@@ -213,35 +215,35 @@ class TabletIndicator extends SystemIndicator {
         toggle.bind_property('checked', this._indicator, 'visible',
             GObject.BindingFlags.SYNC_CREATE);
         this._rotation = new RotationController();
-        // Mở khóa ngay từ đầu để mutter luôn biết hướng thật của cảm biến, kể
-        // cả khi tablet mode được bật từ dòng lệnh.
+        // Unlock right away so mutter always knows the real sensor orientation,
+        // even when tablet mode is turned on from the command line.
         this._rotation.setLocked(false);
         toggle.beforeOn = send => this._rotation.prepare(send);
         const lock = new RotationLockToggle(this._rotation);
         toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
-        // Nút Auto Rotate gốc của GNOME trùng chức năng với nút Rotation Lock
-        // (cùng đổi orientation-lock), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố
-        // hiện lại.
+        // GNOME's stock Auto Rotate toggle duplicates our Rotation Lock toggle
+        // (both change orientation-lock), so hide it and keep it hidden whenever
+        // GNOME tries to show it again.
         this._stock = this._findStockRotation(lock);
-        log(`nút Auto Rotate gốc: ${this._stock ? `tìm thấy (${this._stock.constructor.name}, title=${this._stock.title}, icon=${this._stock.iconName})` : 'KHÔNG tìm thấy'}`);
+        log(`stock Auto Rotate toggle: ${this._stock ? `found (${this._stock.constructor.name}, title=${this._stock.title}, icon=${this._stock.iconName})` : 'NOT found'}`);
         if (this._stock) {
             this._stock.hide();
-            log('đã ẩn nút Auto Rotate gốc');
+            log('hid the stock Auto Rotate toggle');
             this._stockId = this._stock.connect('notify::visible', () => {
                 if (this._stock.visible) {
-                    log('GNOME hiện lại nút Auto Rotate gốc, ẩn lại');
+                    log('GNOME showed the stock Auto Rotate toggle again, hiding it');
                     this._stock.hide();
                 }
             });
         }
         toggle.connect('notify::checked', () => {
-            log(`tablet mode đổi sang: ${toggle.checked ? 'on' : 'off'}`);
+            log(`tablet mode changed to: ${toggle.checked ? 'on' : 'off'}`);
             if (!toggle.checked) {
                 lock.checked = false;
                 this._rotation.stop();
             }
         });
-        // Theo dõi cả khi tablet mode được đổi từ dòng lệnh.
+        // Also track changes made from the command line.
         this._poll = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
             toggle.refresh(true);
             return GLib.SOURCE_CONTINUE;
@@ -254,11 +256,11 @@ class TabletIndicator extends SystemIndicator {
         const qs = Main.panel.statusArea.quickSettings;
         const named = qs._autoRotate ?? qs._rotation;
         const item = named?.quickSettingsItems?.[0];
-        log(`tìm nút gốc: _autoRotate=${!!qs._autoRotate} _rotation=${!!qs._rotation}`);
+        log(`looking for stock toggle: _autoRotate=${!!qs._autoRotate} _rotation=${!!qs._rotation}`);
         if (item)
             return item;
-        log(`quét lưới: ${qs.menu._grid.get_children().map(c => `${c.constructor.name}[${c.title ?? ''}|${c.iconName ?? ''}]`).join(', ')}`);
-        // Dự phòng: tìm trong lưới quick settings theo icon/tiêu đề.
+        log(`scanning grid: ${qs.menu._grid.get_children().map(c => `${c.constructor.name}[${c.title ?? ''}|${c.iconName ?? ''}]`).join(', ')}`);
+        // Fallback: search the quick settings grid by icon/title.
         const icons = ['rotation-allowed-symbolic', 'rotation-locked-symbolic'];
         return qs.menu._grid.get_children().find(c =>
             c !== ours && c instanceof QuickToggle &&

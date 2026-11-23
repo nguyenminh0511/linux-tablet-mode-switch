@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Nhật ký của daemon: ghi ra stdout (journalctl -u tabletmode) và, nếu đặt
-// TABLETMODE_LOG_DIR, ra file $TABLETMODE_LOG_DIR/daemon.log (xoay vòng ở 5MB).
+// Daemon log: written to stdout (journalctl -u tabletmode) and, if
+// TABLETMODE_LOG_DIR is set, to $TABLETMODE_LOG_DIR/daemon.log (rotated at 5 MB).
 const maxLogSize = 5 << 20
 
 var (
@@ -23,7 +23,7 @@ func initLog() {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		fmt.Printf("tabletmode: không tạo được thư mục log %s: %v\n", dir, err)
+		fmt.Printf("tabletmode: cannot create log directory %s: %v\n", dir, err)
 		return
 	}
 	p := filepath.Join(dir, "daemon.log")
@@ -32,7 +32,7 @@ func initLog() {
 	}
 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o666)
 	if err != nil {
-		fmt.Printf("tabletmode: không mở được %s: %v\n", p, err)
+		fmt.Printf("tabletmode: cannot open %s: %v\n", p, err)
 		return
 	}
 	logFile = f
