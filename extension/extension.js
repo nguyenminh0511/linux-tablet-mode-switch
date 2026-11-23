@@ -42,6 +42,9 @@ const ORIENTATION_TO_TRANSFORM = {
 };
 
 const DEBOUNCE_MS = 400;
+// Ngay sau khi claim, cảm biến hay báo hướng tạm thời (thường là dọc) trước khi
+// ổn định, nên không áp dụng gì trong khoảng này.
+const SETTLE_MS = 1500;
 
 const SENSOR_NAME = 'net.hadess.SensorProxy';
 const SENSOR_PATH = '/net/hadess/SensorProxy';
@@ -60,6 +63,7 @@ class RotationController {
             schema_id: 'org.gnome.settings-daemon.peripherals.touchscreen',
         });
         this._savedLock = null;
+        this._notBefore = 0;
         this._current = null;
         this._timer = 0;
         this._busy = false;
@@ -80,8 +84,8 @@ class RotationController {
         log('RotationController.start');
         this._active = true;
         this._current = null;
-        this._savedLock = this._settings.get_boolean('orientation-lock');
-        this._settings.set_boolean('orientation-lock', true);
+        this._notBefore = GLib.get_monotonic_time() / 1000 + SETTLE_MS;
+        this.holdLock();
 
         Gio.DBusProxy.new_for_bus(Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE, null,
             SENSOR_NAME, SENSOR_PATH, SENSOR_NAME, null, (_o, res) => {
@@ -104,6 +108,25 @@ class RotationController {
             });
     }
 
+    // Đặt khóa xoay của GNOME NGAY, trước cả khi công tắc tablet mode được gửi
+    // đi: nếu không, GNOME thấy tablet mode bật sẽ tự xoay dọc theo cảm biến
+    // rồi extension mới xoay lại ngang.
+    holdLock() {
+        if (this._savedLock !== null)
+            return;
+        this._savedLock = this._settings.get_boolean('orientation-lock');
+        this._settings.set_boolean('orientation-lock', true);
+        log(`giữ orientation-lock=true (giá trị cũ: ${this._savedLock})`);
+    }
+
+    releaseLock() {
+        if (this._savedLock === null)
+            return;
+        this._settings.set_boolean('orientation-lock', this._savedLock);
+        log(`khôi phục orientation-lock=${this._savedLock}`);
+        this._savedLock = null;
+    }
+
     stop() {
         if (!this._active)
             return;
@@ -116,9 +139,7 @@ class RotationController {
             this._sensor.call('ReleaseAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null, null);
             this._sensor = null;
         }
-        if (this._savedLock !== null)
-            this._settings.set_boolean('orientation-lock', this._savedLock);
-        this._savedLock = null;
+        this.releaseLock();
         this._apply(0);
     }
 
@@ -134,7 +155,9 @@ class RotationController {
         if (!this._active || !this._sensor || this.locked)
             return;
         this._clearTimer();
-        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
+        const wait = Math.max(DEBOUNCE_MS,
+            this._notBefore - GLib.get_monotonic_time() / 1000);
+        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.ceil(wait), () => {
             this._timer = 0;
             if (!this._active || !this._sensor || this.locked)
                 return GLib.SOURCE_REMOVE;
@@ -232,8 +255,16 @@ class TabletToggle extends QuickToggle {
             iconName: 'input-tablet-symbolic',
             toggleMode: false,
         });
+        this.beforeOn = null;
+        this.afterFail = null;
         this.connect('clicked', () => {
-            run('toggle', out => this._apply(out));
+            if (!this.checked)
+                this.beforeOn?.();
+            run('toggle', out => {
+                this._apply(out);
+                if (out !== 'on')
+                    this.afterFail?.();
+            });
         });
     }
 
@@ -272,6 +303,11 @@ class TabletIndicator extends SystemIndicator {
         toggle.bind_property('checked', this._indicator, 'visible',
             GObject.BindingFlags.SYNC_CREATE);
         this._rotation = new RotationController();
+        toggle.beforeOn = () => this._rotation.holdLock();
+        toggle.afterFail = () => {
+            if (!this._rotation._active)
+                this._rotation.releaseLock();
+        };
         const lock = new RotationLockToggle(this._rotation);
         toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
         // Nút Auto Rotate gốc của GNOME không còn đúng (tool tự quản lý khóa
