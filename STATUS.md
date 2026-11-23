@@ -47,13 +47,25 @@ thì xoay theo.
   bật (qua `Main.panel.statusArea.quickSettings._rotation`, thuộc tính nội bộ GNOME 46).
 - Bản có nút khóa mới ĐÃ COMMIT nhưng CHƯA CÀI/CHƯA CHẠY THỬ (cần sudo).
 
+## Cập nhật: sửa xoay nghiêng lúc bật + ẩn nút gốc (commit 9bf08cf)
+- Hiện tượng: bật tablet mode thì màn hình xoay nghiêng 1 lần rồi mới về ngang.
+  Nguyên nhân (suy luận, CHƯA kiểm chứng): cảm biến vừa claim báo hướng tạm thời
+  (vd `normal` -> transform 1) trước khi ổn định `right-up`; `_current=null` nên
+  lần apply đầu luôn chạy; nhiều `ApplyMonitorsConfig` có thể chồng nhau.
+- Đã sửa: `_update()` debounce 400ms (`DEBOUNCE_MS`) rồi mới đọc hướng; `_apply()`
+  tuần tự hóa (`_busy`/`_queued`); `stop()` hủy timer.
+- Nút Auto Rotate gốc: ẩn hẳn khi extension bật (không phụ thuộc tablet mode), giữ
+  ẩn qua `notify::visible`, hiện lại khi extension disable. Nút "Khóa xoay màn hình"
+  của extension vẫn giữ.
+- CHƯA cài, CHƯA chạy thử (chỉ kiểm tra cú pháp được hạn chế; không có node).
+
 ## Việc cần làm tiếp
 1. `cd ~/tablet-mode && ./install.sh`, ĐĂNG XUẤT/ĐĂNG NHẬP, kiểm tra
    `gnome-extensions info tabletmode@local`; nếu chưa Enabled thì
    `gnome-extensions enable tabletmode@local`.
 2. Thử: bật tablet mode, nút "Khóa xoay màn hình" có hiện không, bật khóa thì
-   nghiêng máy không xoay, tắt khóa thì xoay lại; nút Auto Rotate gốc có bị ẩn không;
-   tắt tablet mode thì nút gốc hiện lại.
+   nghiêng máy không xoay, tắt khóa thì xoay lại; nút Auto Rotate gốc luôn bị ẩn;
+   bật tablet mode không còn xoay nghiêng 1 lần trước khi về ngang.
 3. Nếu lỗi: `journalctl -b /usr/bin/gnome-shell | grep -i tabletmode`.
 
 ## Rollback
