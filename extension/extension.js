@@ -17,6 +17,8 @@ const ORIENTATION_TO_TRANSFORM = {
     'bottom-up': 3,
 };
 
+const DEBOUNCE_MS = 400;
+
 const SENSOR_NAME = 'net.hadess.SensorProxy';
 const SENSOR_PATH = '/net/hadess/SensorProxy';
 const DISPLAY_NAME = 'org.gnome.Mutter.DisplayConfig';
@@ -35,6 +37,9 @@ class RotationController {
         });
         this._savedLock = null;
         this._current = null;
+        this._timer = 0;
+        this._busy = false;
+        this._queued = null;
         this.locked = false;
     }
 
@@ -73,6 +78,8 @@ class RotationController {
         if (!this._active)
             return;
         this._active = false;
+        this._clearTimer();
+        this._queued = null;
         if (this._sensor) {
             this._sensor.disconnect(this._sensorId);
             this._sensor.call('ReleaseAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null, null);
@@ -84,18 +91,45 @@ class RotationController {
         this._apply(0);
     }
 
+    _clearTimer() {
+        if (this._timer)
+            GLib.source_remove(this._timer);
+        this._timer = 0;
+    }
+
+    // Cảm biến mới được claim thường báo hướng tạm thời trước khi ổn định, nên
+    // chỉ áp dụng sau khi giá trị không đổi trong DEBOUNCE_MS.
     _update() {
         if (!this._active || !this._sensor || this.locked)
             return;
-        const v = this._sensor.get_cached_property('AccelerometerOrientation');
-        const t = ORIENTATION_TO_TRANSFORM[v?.unpack()];
-        if (t !== undefined)
-            this._apply(t);
+        this._clearTimer();
+        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
+            this._timer = 0;
+            if (!this._active || !this._sensor || this.locked)
+                return GLib.SOURCE_REMOVE;
+            const v = this._sensor.get_cached_property('AccelerometerOrientation');
+            const t = ORIENTATION_TO_TRANSFORM[v?.unpack()];
+            if (t !== undefined)
+                this._apply(t);
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _apply(transform) {
+        if (this._busy) {
+            this._queued = transform;
+            return;
+        }
         if (this._current === transform)
             return;
+        this._busy = true;
+        const done = () => {
+            this._busy = false;
+            const q = this._queued;
+            this._queued = null;
+            if (q !== null && q !== this._current)
+                this._apply(q);
+        };
         Gio.DBus.session.call(DISPLAY_NAME, DISPLAY_PATH, DISPLAY_NAME, 'GetCurrentState',
             null, null, Gio.DBusCallFlags.NONE, -1, null, (conn, res) => {
                 try {
@@ -121,9 +155,11 @@ class RotationController {
                             } catch (e) {
                                 console.error(`tabletmode: không xoay được màn hình: ${e}`);
                             }
+                            done();
                         });
                 } catch (e) {
                     console.error(`tabletmode: đọc cấu hình màn hình lỗi: ${e}`);
+                    done();
                 }
             });
     }
@@ -199,17 +235,22 @@ class TabletIndicator extends SystemIndicator {
         this._rotation = new RotationController();
         const lock = new RotationLockToggle(this._rotation);
         toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
+        // Nút Auto Rotate gốc của GNOME không còn đúng (tool tự quản lý khóa
+        // xoay), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố hiện lại.
+        this._stock = Main.panel.statusArea.quickSettings._rotation?.quickSettingsItems?.[0] ?? null;
+        if (this._stock) {
+            this._stock.hide();
+            this._stockId = this._stock.connect('notify::visible', () => {
+                if (this._stock.visible)
+                    this._stock.hide();
+            });
+        }
         toggle.connect('notify::checked', () => {
-            // Nút Auto Rotate gốc của GNOME gắn với khóa xoay mà tool đang
-            // chiếm giữ, nên ẩn nó khi tablet mode bật và dùng nút khóa riêng.
-            const stock = Main.panel.statusArea.quickSettings._rotation?.quickSettingsItems?.[0];
             if (toggle.checked) {
                 this._rotation.start();
-                stock?.hide();
             } else {
                 this._rotation.stop();
                 lock.checked = false;
-                stock?.show();
             }
         });
         // Theo dõi cả khi tablet mode được đổi từ dòng lệnh.
@@ -230,6 +271,11 @@ class TabletIndicator extends SystemIndicator {
             GLib.source_remove(this._poll);
         this._poll = 0;
         this._rotation.stop();
+        if (this._stock) {
+            this._stock.disconnect(this._stockId);
+            this._stock.show();
+            this._stock = null;
+        }
         this.quickSettingsItems.forEach(item => item.destroy());
         super.destroy();
     }
