@@ -31,116 +31,66 @@ function log(msg) {
     }
 }
 
-// Cảm biến của GPD Pocket 4 báo "right-up" khi máy đặt thẳng (hướng ngang
-// bình thường), nên phải bù lệch. Giá trị là transform của Mutter
-// (0 = bình thường, 1 = 90, 2 = 180, 3 = 270).
-const ORIENTATION_TO_TRANSFORM = {
-    'right-up': 0,
-    'normal': 1,
-    'left-up': 2,
-    'bottom-up': 3,
-};
+const LOCK_KEY = 'orientation-lock';
+// Thời gian chờ để mutter nhận thay đổi orientation-lock và đọc lại cảm biến
+// trước khi công tắc tablet mode được gửi đi.
+const UNLOCK_SYNC_MS = 300;
 
-const DEBOUNCE_MS = 400;
-// Ngay sau khi claim, cảm biến hay báo hướng tạm thời (thường là dọc) trước khi
-// ổn định, nên không áp dụng gì trong khoảng này.
-const SETTLE_MS = 1500;
-
-const SENSOR_NAME = 'net.hadess.SensorProxy';
-const SENSOR_PATH = '/net/hadess/SensorProxy';
 const DISPLAY_NAME = 'org.gnome.Mutter.DisplayConfig';
 const DISPLAY_PATH = '/org/gnome/Mutter/DisplayConfig';
 
-// Tự xoay màn hình theo cảm biến khi ở tablet mode. Khi bật, khóa xoay của
-// GNOME được đặt true để GNOME không tự xoay lệch; khi tắt, khôi phục khóa cũ
-// và đưa màn hình về hướng ngang.
+// Việc xoay màn hình trong tablet mode do chính mutter làm. Kernel đã khai báo
+// panel_orientation=right_side_up cho eDP-1, nên mutter quy đổi đúng hướng cảm
+// biến: right-up -> ngang (transform 0), normal -> 1, left-up -> 2, bottom-up -> 3.
+//
+// Mutter chỉ cập nhật hướng cảm biến khi orientation-lock=false. Nếu khóa đang
+// bật lúc vào tablet mode, mutter áp hướng nó nhớ từ trước; khóa từ lúc đăng
+// nhập thì hướng đó là UNDEFINED, coi như "normal", nên màn hình xoay dọc sai.
+// Vì vậy extension giữ orientation-lock=false, chỉ bật khi người dùng bấm
+// Rotation Lock (mutter giữ nguyên hướng hiện tại).
 class RotationController {
     constructor() {
-        this._active = false;
-        this._sensor = null;
-        this._sensorId = 0;
         this._settings = new Gio.Settings({
             schema_id: 'org.gnome.settings-daemon.peripherals.touchscreen',
         });
-        this._savedLock = null;
-        this._notBefore = 0;
-        this._current = null;
         this._timer = 0;
-        this._busy = false;
-        this._queued = null;
-        this.locked = false;
     }
 
     setLocked(locked) {
-        log(`khóa xoay: ${locked ? 'BẬT' : 'tắt'}`);
-        this.locked = locked;
-        if (!locked)
-            this._update();
+        if (this._settings.get_boolean(LOCK_KEY) === locked)
+            return;
+        this._settings.set_boolean(LOCK_KEY, locked);
+        log(`orientation-lock=${locked}`);
     }
 
-    start() {
-        if (this._active)
-            return;
-        log('RotationController.start');
-        this._active = true;
-        this._current = null;
-        this._notBefore = GLib.get_monotonic_time() / 1000 + SETTLE_MS;
-        this.holdLock();
-
-        Gio.DBusProxy.new_for_bus(Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE, null,
-            SENSOR_NAME, SENSOR_PATH, SENSOR_NAME, null, (_o, res) => {
-                try {
-                    const proxy = Gio.DBusProxy.new_for_bus_finish(res);
-                    if (!this._active) {
-                        return;
-                    }
-                    this._sensor = proxy;
-                    log(`đã kết nối iio-sensor-proxy, hướng hiện tại: ${proxy.get_cached_property('AccelerometerOrientation')?.unpack()}`);
-                    this._sensorId = proxy.connect('g-properties-changed', () => this._update());
-                    proxy.call('ClaimAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null,
-                        () => {
-                            log('đã claim accelerometer');
-                            this._update();
-                        });
-                } catch (e) {
-                    log(`LỖI: không mở được iio-sensor-proxy: ${e}`);
-                }
-            });
-    }
-
-    // Đặt khóa xoay của GNOME NGAY, trước cả khi công tắc tablet mode được gửi
-    // đi: nếu không, GNOME thấy tablet mode bật sẽ tự xoay dọc theo cảm biến
-    // rồi extension mới xoay lại ngang.
-    holdLock() {
-        if (this._savedLock !== null)
-            return;
-        this._savedLock = this._settings.get_boolean('orientation-lock');
-        this._settings.set_boolean('orientation-lock', true);
-        log(`giữ orientation-lock=true (giá trị cũ: ${this._savedLock})`);
-    }
-
-    releaseLock() {
-        if (this._savedLock === null)
-            return;
-        this._settings.set_boolean('orientation-lock', this._savedLock);
-        log(`khôi phục orientation-lock=${this._savedLock}`);
-        this._savedLock = null;
-    }
-
-    stop() {
-        if (!this._active)
-            return;
-        log('RotationController.stop');
-        this._active = false;
+    // Gọi trước khi bật tablet mode: mở khóa và chờ mutter đọc lại cảm biến.
+    prepare(callback) {
         this._clearTimer();
-        this._queued = null;
-        if (this._sensor) {
-            this._sensor.disconnect(this._sensorId);
-            this._sensor.call('ReleaseAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null, null);
-            this._sensor = null;
+        if (!this._settings.get_boolean(LOCK_KEY)) {
+            callback();
+            return;
         }
-        this.releaseLock();
-        this._apply(0);
+        this.setLocked(false);
+        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, UNLOCK_SYNC_MS, () => {
+            this._timer = 0;
+            callback();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // Gọi khi tắt tablet mode: mở khóa và đưa màn hình về ngang nếu đang xoay
+    // (mutter không tự xoay lại khi ra khỏi tablet mode).
+    stop() {
+        this._clearTimer();
+        this.setLocked(false);
+        this._resetTransform();
+    }
+
+    // Khi extension bị tắt (kể cả lúc đăng xuất): trả khóa về mặc định của
+    // GNOME để lần đăng nhập sau mutter vẫn theo dõi cảm biến.
+    destroy() {
+        this._clearTimer();
+        this.setLocked(false);
     }
 
     _clearTimer() {
@@ -149,47 +99,13 @@ class RotationController {
         this._timer = 0;
     }
 
-    // Cảm biến mới được claim thường báo hướng tạm thời trước khi ổn định, nên
-    // chỉ áp dụng sau khi giá trị không đổi trong DEBOUNCE_MS.
-    _update() {
-        if (!this._active || !this._sensor || this.locked)
-            return;
-        this._clearTimer();
-        const wait = Math.max(DEBOUNCE_MS,
-            this._notBefore - GLib.get_monotonic_time() / 1000);
-        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.ceil(wait), () => {
-            this._timer = 0;
-            if (!this._active || !this._sensor || this.locked)
-                return GLib.SOURCE_REMOVE;
-            const v = this._sensor.get_cached_property('AccelerometerOrientation');
-            const t = ORIENTATION_TO_TRANSFORM[v?.unpack()];
-            log(`cảm biến ổn định: ${v?.unpack()} -> transform ${t} (đang là ${this._current})`);
-            if (t !== undefined)
-                this._apply(t);
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    _apply(transform) {
-        if (this._busy) {
-            log(`đang bận, xếp hàng transform ${transform}`);
-            this._queued = transform;
-            return;
-        }
-        if (this._current === transform)
-            return;
-        this._busy = true;
-        const done = () => {
-            this._busy = false;
-            const q = this._queued;
-            this._queued = null;
-            if (q !== null && q !== this._current)
-                this._apply(q);
-        };
+    _resetTransform() {
         Gio.DBus.session.call(DISPLAY_NAME, DISPLAY_PATH, DISPLAY_NAME, 'GetCurrentState',
             null, null, Gio.DBusCallFlags.NONE, -1, null, (conn, res) => {
                 try {
                     const [serial, monitors, logical] = conn.call_finish(res).recursiveUnpack();
+                    if (logical.every(lm => lm[3] === 0))
+                        return;
                     const modeOf = new Map();
                     for (const [[connector], modes] of monitors) {
                         for (const mode of modes) {
@@ -199,7 +115,7 @@ class RotationController {
                     }
                     const out = logical.map(([x, y, scale, , primary, mons]) => {
                         const list = mons.map(([c]) => [c, modeOf.get(c), {}]);
-                        return [x, y, scale, transform, primary, list];
+                        return [x, y, scale, 0, primary, list];
                     });
                     const args = new GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', [serial, 1, out, {}]);
                     Gio.DBus.session.call(DISPLAY_NAME, DISPLAY_PATH, DISPLAY_NAME,
@@ -207,16 +123,13 @@ class RotationController {
                         (c2, r2) => {
                             try {
                                 c2.call_finish(r2);
-                                this._current = transform;
-                                log(`đã xoay màn hình: transform ${transform}`);
+                                log('đã đưa màn hình về ngang (transform 0)');
                             } catch (e) {
                                 log(`LỖI: không xoay được màn hình: ${e}`);
                             }
-                            done();
                         });
                 } catch (e) {
                     log(`LỖI: đọc cấu hình màn hình lỗi: ${e}`);
-                    done();
                 }
             });
     }
@@ -256,15 +169,12 @@ class TabletToggle extends QuickToggle {
             toggleMode: false,
         });
         this.beforeOn = null;
-        this.afterFail = null;
         this.connect('clicked', () => {
-            if (!this.checked)
-                this.beforeOn?.();
-            run('toggle', out => {
-                this._apply(out);
-                if (out !== 'on')
-                    this.afterFail?.();
-            });
+            const send = () => run('toggle', out => this._apply(out));
+            if (!this.checked && this.beforeOn)
+                this.beforeOn(send);
+            else
+                send();
         });
     }
 
@@ -303,15 +213,15 @@ class TabletIndicator extends SystemIndicator {
         toggle.bind_property('checked', this._indicator, 'visible',
             GObject.BindingFlags.SYNC_CREATE);
         this._rotation = new RotationController();
-        toggle.beforeOn = () => this._rotation.holdLock();
-        toggle.afterFail = () => {
-            if (!this._rotation._active)
-                this._rotation.releaseLock();
-        };
+        // Mở khóa ngay từ đầu để mutter luôn biết hướng thật của cảm biến, kể
+        // cả khi tablet mode được bật từ dòng lệnh.
+        this._rotation.setLocked(false);
+        toggle.beforeOn = send => this._rotation.prepare(send);
         const lock = new RotationLockToggle(this._rotation);
         toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
-        // Nút Auto Rotate gốc của GNOME không còn đúng (tool tự quản lý khóa
-        // xoay), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố hiện lại.
+        // Nút Auto Rotate gốc của GNOME trùng chức năng với nút Rotation Lock
+        // (cùng đổi orientation-lock), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố
+        // hiện lại.
         this._stock = this._findStockRotation(lock);
         log(`nút Auto Rotate gốc: ${this._stock ? `tìm thấy (${this._stock.constructor.name}, title=${this._stock.title}, icon=${this._stock.iconName})` : 'KHÔNG tìm thấy'}`);
         if (this._stock) {
@@ -326,11 +236,9 @@ class TabletIndicator extends SystemIndicator {
         }
         toggle.connect('notify::checked', () => {
             log(`tablet mode đổi sang: ${toggle.checked ? 'on' : 'off'}`);
-            if (toggle.checked) {
-                this._rotation.start();
-            } else {
-                this._rotation.stop();
+            if (!toggle.checked) {
                 lock.checked = false;
+                this._rotation.stop();
             }
         });
         // Theo dõi cả khi tablet mode được đổi từ dòng lệnh.
@@ -365,7 +273,7 @@ class TabletIndicator extends SystemIndicator {
         if (this._poll)
             GLib.source_remove(this._poll);
         this._poll = 0;
-        this._rotation.stop();
+        this._rotation.destroy();
         if (this._stock) {
             this._stock.disconnect(this._stockId);
             this._stock.show();

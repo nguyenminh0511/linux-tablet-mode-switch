@@ -59,6 +59,23 @@ thì xoay theo.
   của extension vẫn giữ.
 - CHƯA cài, CHƯA chạy thử (chỉ kiểm tra cú pháp được hạn chế; không có node).
 
+## NGUYÊN NHÂN THẬT của xoay sai lúc bật (đã kiểm chứng 2026-11-23 16:3x)
+- Đọc mã nguồn mutter 46.2 (meta-orientation-manager.c, meta-monitor-manager.c):
+  khi tablet mode bật, `update_panel_orientation_managed()` gọi ngay
+  `handle_orientation_change()` với hướng mutter đang nhớ (`effective_orientation`).
+- Hướng này chỉ cập nhật từ cảm biến khi `orientation-lock=false`. Nếu khóa đã bật
+  từ lúc đăng nhập, hướng nhớ là UNDEFINED, coi như normal, quy đổi qua
+  `panel_orientation=right_side_up` (cmdline kernel) thành logical transform 1,
+  nên màn hình xoay dọc. Extension xoay lại về 0 sau khoảng 1,6 giây.
+- Cảm biến KHÔNG lệch theo nghĩa mutter: right-up -> transform 270 (crtc) -> logical 0.
+  Bảng quy đổi của mutter trùng với `ORIENTATION_TO_TRANSFORM` cũ của extension.
+- Thử bằng terminal: khóa=true thì `tabletmode on` làm transform 0 -> 1 ngay sau
+  90ms. Tắt khóa (đợi 0,3 giây) rồi `tabletmode on` thì transform giữ 0, không xoay.
+- Đã sửa extension (CHƯA CÀI): bỏ việc tự xoay theo cảm biến, để mutter xoay. Extension
+  giữ `orientation-lock=false` (lúc enable, trước khi bật tablet mode chờ 300ms,
+  lúc tắt tablet mode, lúc disable). Nút "Rotation Lock" đổi trực tiếp
+  `orientation-lock`. Khi tắt tablet mode, extension đưa transform về 0 nếu đang xoay.
+
 ## Việc cần làm tiếp
 1. `cd ~/tablet-mode && ./install.sh`, ĐĂNG XUẤT/ĐĂNG NHẬP, kiểm tra
    `gnome-extensions info tabletmode@local`; nếu chưa Enabled thì
