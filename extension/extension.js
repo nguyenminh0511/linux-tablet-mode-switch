@@ -1,10 +1,133 @@
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
 const BIN = '/usr/local/bin/tabletmode';
+
+// Cảm biến của GPD Pocket 4 báo "right-up" khi máy đặt thẳng (hướng ngang
+// bình thường), nên phải bù lệch. Giá trị là transform của Mutter
+// (0 = bình thường, 1 = 90, 2 = 180, 3 = 270).
+const ORIENTATION_TO_TRANSFORM = {
+    'right-up': 0,
+    'normal': 1,
+    'left-up': 2,
+    'bottom-up': 3,
+};
+
+const SENSOR_NAME = 'net.hadess.SensorProxy';
+const SENSOR_PATH = '/net/hadess/SensorProxy';
+const DISPLAY_NAME = 'org.gnome.Mutter.DisplayConfig';
+const DISPLAY_PATH = '/org/gnome/Mutter/DisplayConfig';
+
+// Tự xoay màn hình theo cảm biến khi ở tablet mode. Khi bật, khóa xoay của
+// GNOME được đặt true để GNOME không tự xoay lệch; khi tắt, khôi phục khóa cũ
+// và đưa màn hình về hướng ngang.
+class RotationController {
+    constructor() {
+        this._active = false;
+        this._sensor = null;
+        this._sensorId = 0;
+        this._settings = new Gio.Settings({
+            schema_id: 'org.gnome.settings-daemon.peripherals.touchscreen',
+        });
+        this._savedLock = null;
+        this._current = null;
+        this.locked = false;
+    }
+
+    setLocked(locked) {
+        this.locked = locked;
+        if (!locked)
+            this._update();
+    }
+
+    start() {
+        if (this._active)
+            return;
+        this._active = true;
+        this._current = null;
+        this._savedLock = this._settings.get_boolean('orientation-lock');
+        this._settings.set_boolean('orientation-lock', true);
+
+        Gio.DBusProxy.new_for_bus(Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE, null,
+            SENSOR_NAME, SENSOR_PATH, SENSOR_NAME, null, (_o, res) => {
+                try {
+                    const proxy = Gio.DBusProxy.new_for_bus_finish(res);
+                    if (!this._active) {
+                        return;
+                    }
+                    this._sensor = proxy;
+                    this._sensorId = proxy.connect('g-properties-changed', () => this._update());
+                    proxy.call('ClaimAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null,
+                        () => this._update());
+                } catch (e) {
+                    console.error(`tabletmode: không mở được iio-sensor-proxy: ${e}`);
+                }
+            });
+    }
+
+    stop() {
+        if (!this._active)
+            return;
+        this._active = false;
+        if (this._sensor) {
+            this._sensor.disconnect(this._sensorId);
+            this._sensor.call('ReleaseAccelerometer', null, Gio.DBusCallFlags.NONE, -1, null, null);
+            this._sensor = null;
+        }
+        if (this._savedLock !== null)
+            this._settings.set_boolean('orientation-lock', this._savedLock);
+        this._savedLock = null;
+        this._apply(0);
+    }
+
+    _update() {
+        if (!this._active || !this._sensor || this.locked)
+            return;
+        const v = this._sensor.get_cached_property('AccelerometerOrientation');
+        const t = ORIENTATION_TO_TRANSFORM[v?.unpack()];
+        if (t !== undefined)
+            this._apply(t);
+    }
+
+    _apply(transform) {
+        if (this._current === transform)
+            return;
+        Gio.DBus.session.call(DISPLAY_NAME, DISPLAY_PATH, DISPLAY_NAME, 'GetCurrentState',
+            null, null, Gio.DBusCallFlags.NONE, -1, null, (conn, res) => {
+                try {
+                    const [serial, monitors, logical] = conn.call_finish(res).recursiveUnpack();
+                    const modeOf = new Map();
+                    for (const [[connector], modes] of monitors) {
+                        for (const mode of modes) {
+                            if (mode[6]['is-current'])
+                                modeOf.set(connector, mode[0]);
+                        }
+                    }
+                    const out = logical.map(([x, y, scale, , primary, mons]) => {
+                        const list = mons.map(([c]) => [c, modeOf.get(c), {}]);
+                        return [x, y, scale, transform, primary, list];
+                    });
+                    const args = new GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', [serial, 1, out, {}]);
+                    Gio.DBus.session.call(DISPLAY_NAME, DISPLAY_PATH, DISPLAY_NAME,
+                        'ApplyMonitorsConfig', args, null, Gio.DBusCallFlags.NONE, -1, null,
+                        (c2, r2) => {
+                            try {
+                                c2.call_finish(r2);
+                                this._current = transform;
+                            } catch (e) {
+                                console.error(`tabletmode: không xoay được màn hình: ${e}`);
+                            }
+                        });
+                } catch (e) {
+                    console.error(`tabletmode: đọc cấu hình màn hình lỗi: ${e}`);
+                }
+            });
+    }
+}
 
 function run(cmd, callback) {
     try {
@@ -39,15 +162,27 @@ class TabletToggle extends QuickToggle {
         });
     }
 
-    refresh() {
-        run('status', out => this._apply(out));
+    refresh(quiet = false) {
+        run('status', out => this._apply(out, quiet));
     }
 
-    _apply(out) {
+    _apply(out, quiet = false) {
         if (out === 'on' || out === 'off')
             this.checked = out === 'on';
-        else
+        else if (!quiet)
             Main.notify('Tablet Mode', 'Không điều khiển được dịch vụ tabletmode.');
+    }
+});
+
+const RotationLockToggle = GObject.registerClass(
+class RotationLockToggle extends QuickToggle {
+    _init(rotation) {
+        super._init({
+            title: 'Khóa xoay màn hình',
+            iconName: 'rotation-locked-symbolic',
+            toggleMode: true,
+        });
+        this.connect('notify::checked', () => rotation.setLocked(this.checked));
     }
 });
 
@@ -61,7 +196,28 @@ class TabletIndicator extends SystemIndicator {
         const toggle = new TabletToggle();
         toggle.bind_property('checked', this._indicator, 'visible',
             GObject.BindingFlags.SYNC_CREATE);
-        this.quickSettingsItems.push(toggle);
+        this._rotation = new RotationController();
+        const lock = new RotationLockToggle(this._rotation);
+        toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
+        toggle.connect('notify::checked', () => {
+            // Nút Auto Rotate gốc của GNOME gắn với khóa xoay mà tool đang
+            // chiếm giữ, nên ẩn nó khi tablet mode bật và dùng nút khóa riêng.
+            const stock = Main.panel.statusArea.quickSettings._rotation?.quickSettingsItems?.[0];
+            if (toggle.checked) {
+                this._rotation.start();
+                stock?.hide();
+            } else {
+                this._rotation.stop();
+                lock.checked = false;
+                stock?.show();
+            }
+        });
+        // Theo dõi cả khi tablet mode được đổi từ dòng lệnh.
+        this._poll = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
+            toggle.refresh(true);
+            return GLib.SOURCE_CONTINUE;
+        });
+        this.quickSettingsItems.push(toggle, lock);
         this._toggle = toggle;
     }
 
@@ -70,6 +226,10 @@ class TabletIndicator extends SystemIndicator {
     }
 
     destroy() {
+        if (this._poll)
+            GLib.source_remove(this._poll);
+        this._poll = 0;
+        this._rotation.stop();
         this.quickSettingsItems.forEach(item => item.destroy());
         super.destroy();
     }
