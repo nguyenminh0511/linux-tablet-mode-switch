@@ -1,0 +1,24 @@
+[Unit]
+Description=Virtual tablet mode switch (GPD Pocket 4)
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tabletmode daemon
+Restart=on-failure
+RuntimeDirectory=tabletmode
+RuntimeDirectoryMode=0755
+
+# Hạn chế quyền: chỉ cần ghi /dev/uinput và tạo socket trong /run/tabletmode
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+
+[Install]
+WantedBy=multi-user.target

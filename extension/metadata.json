@@ -1,0 +1,6 @@
+{
+  "uuid": "tabletmode@local",
+  "name": "Tablet Mode Toggle",
+  "description": "Nút bật/tắt tablet mode ảo trong Quick Settings (gọi /usr/local/bin/tabletmode).",
+  "shell-version": ["46", "47", "48"]
+}
