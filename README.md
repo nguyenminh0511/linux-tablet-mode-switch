@@ -69,14 +69,14 @@ Tested on another device? Please open an issue or a pull request to add it to th
 ### From source
 
 ```bash
-git clone https://github.com/nguyenminh0511/tablet-mode-switch.git
-cd tablet-mode-switch
+git clone https://github.com/nguyenminh0511/linux-tablet-mode-switch.git
+cd linux-tablet-mode-switch
 ./install.sh          # builds the binary, then asks for sudo to install
 ```
 
 ### From a release tarball
 
-Download `tabletmode-<version>.tar.gz` from the [Releases page](https://github.com/nguyenminh0511/tablet-mode-switch/releases). It contains a prebuilt binary, so you do not need Go:
+Download `tabletmode-<version>.tar.gz` from the [Releases page](https://github.com/nguyenminh0511/linux-tablet-mode-switch/releases). It contains a prebuilt binary, so you do not need Go:
 
 ```bash
 tar xzf tabletmode-<version>.tar.gz
