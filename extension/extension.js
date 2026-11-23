@@ -214,7 +214,7 @@ const RotationLockToggle = GObject.registerClass(
 class RotationLockToggle extends QuickToggle {
     _init(rotation) {
         super._init({
-            title: 'Khóa xoay màn hình',
+            title: 'Rotation Lock',
             iconName: 'rotation-locked-symbolic',
             toggleMode: true,
         });
@@ -237,7 +237,7 @@ class TabletIndicator extends SystemIndicator {
         toggle.bind_property('checked', lock, 'visible', GObject.BindingFlags.SYNC_CREATE);
         // Nút Auto Rotate gốc của GNOME không còn đúng (tool tự quản lý khóa
         // xoay), nên ẩn hẳn và giữ ẩn mỗi khi GNOME cố hiện lại.
-        this._stock = Main.panel.statusArea.quickSettings._rotation?.quickSettingsItems?.[0] ?? null;
+        this._stock = this._findStockRotation(lock);
         if (this._stock) {
             this._stock.hide();
             this._stockId = this._stock.connect('notify::visible', () => {
@@ -260,6 +260,19 @@ class TabletIndicator extends SystemIndicator {
         });
         this.quickSettingsItems.push(toggle, lock);
         this._toggle = toggle;
+    }
+
+    _findStockRotation(ours) {
+        const qs = Main.panel.statusArea.quickSettings;
+        const named = qs._autoRotate ?? qs._rotation;
+        const item = named?.quickSettingsItems?.[0];
+        if (item)
+            return item;
+        // Dự phòng: tìm trong lưới quick settings theo icon/tiêu đề.
+        const icons = ['rotation-allowed-symbolic', 'rotation-locked-symbolic'];
+        return qs.menu._grid.get_children().find(c =>
+            c !== ours && c instanceof QuickToggle &&
+            (c.title === 'Auto Rotate' || icons.includes(c.iconName))) ?? null;
     }
 
     refresh() {

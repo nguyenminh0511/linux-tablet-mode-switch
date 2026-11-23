@@ -42,7 +42,7 @@ thì xoay theo.
   xoay hoạt động; NGƯỜI DÙNG ĐÃ XÁC NHẬN nghiêng máy xoay đúng chiều (bảng
   `ORIENTATION_TO_TRANSFORM` đúng, không cần đổi).
 - Nút Auto Rotate gốc của GNOME vô hiệu khi tablet mode bật (vì extension giữ
-  orientation-lock=true). Đã thêm nút "Khóa xoay màn hình" (RotationLockToggle):
+  orientation-lock=true). Đã thêm nút "Rotation Lock" (RotationLockToggle):
   bật = giữ hướng hiện tại, tắt = xoay theo cảm biến. Nút gốc bị ẩn khi tablet mode
   bật (qua `Main.panel.statusArea.quickSettings._rotation`, thuộc tính nội bộ GNOME 46).
 - Bản có nút khóa mới ĐÃ COMMIT nhưng CHƯA CÀI/CHƯA CHẠY THỬ (cần sudo).
@@ -55,7 +55,7 @@ thì xoay theo.
 - Đã sửa: `_update()` debounce 400ms (`DEBOUNCE_MS`) rồi mới đọc hướng; `_apply()`
   tuần tự hóa (`_busy`/`_queued`); `stop()` hủy timer.
 - Nút Auto Rotate gốc: ẩn hẳn khi extension bật (không phụ thuộc tablet mode), giữ
-  ẩn qua `notify::visible`, hiện lại khi extension disable. Nút "Khóa xoay màn hình"
+  ẩn qua `notify::visible`, hiện lại khi extension disable. Nút "Rotation Lock"
   của extension vẫn giữ.
 - CHƯA cài, CHƯA chạy thử (chỉ kiểm tra cú pháp được hạn chế; không có node).
 
@@ -63,7 +63,7 @@ thì xoay theo.
 1. `cd ~/tablet-mode && ./install.sh`, ĐĂNG XUẤT/ĐĂNG NHẬP, kiểm tra
    `gnome-extensions info tabletmode@local`; nếu chưa Enabled thì
    `gnome-extensions enable tabletmode@local`.
-2. Thử: bật tablet mode, nút "Khóa xoay màn hình" có hiện không, bật khóa thì
+2. Thử: bật tablet mode, nút "Rotation Lock" có hiện không, bật khóa thì
    nghiêng máy không xoay, tắt khóa thì xoay lại; nút Auto Rotate gốc luôn bị ẩn;
    bật tablet mode không còn xoay nghiêng 1 lần trước khi về ngang.
 3. Nếu lỗi: `journalctl -b /usr/bin/gnome-shell | grep -i tabletmode`.
